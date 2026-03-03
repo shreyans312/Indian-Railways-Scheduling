@@ -101,7 +101,7 @@ Time Tabling CRIS/
 
 ### Step 1: Preprocess Data (run once)
 ```bash
-python3 plan_claude/preprocess.py
+python3 preprocess.py
 ```
 Reads all 11 CSVs and generates 9 JSON files in `preprocessed_data/`.
 
@@ -153,6 +153,9 @@ python3 src/visualize_network.py --train ACND23240007 --discover
 | `--output FILENAME` | Output file name (saved in `output/` subfolder) |
 
 ---
+
+<img width="4440" height="2568" alt="route_comparison_divergent" src="https://github.com/user-attachments/assets/ef695647-bde2-4246-be1e-3b8b0b326199" />
+
 
 ## Known Limitations
 
