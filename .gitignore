@@ -1,0 +1,24 @@
+# === Raw input data (CRIS confidential) ===
+Copy of *.csv
+Train_Schedule.csv
+
+# === Preprocessed JSON data (derived from confidential data) ===
+preprocessed_data/*.json
+preprocessed_data/
+
+# === Generated schedule (derived from confidential data) ===
+output/generated_schedule.csv
+
+# === JSON files anywhere (safety net) ===
+*.json
+
+# === Reference documents ===
+*.docx
+*.pdf
+
+# === Python caches ===
+__pycache__/
+*.pyc
+
+# === macOS ===
+.DS_Store
