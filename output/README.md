@@ -1,0 +1,1 @@
+The generated timetable on the given data is confidential and requires access approval from CRIS and IIT Delhi. To get access send us request on: https://drive.google.com/drive/folders/1rCBqibAGxf3U_mjAR_oOaTWH25hM4tUI?usp=drive_link
