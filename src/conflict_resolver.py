@@ -1,30 +1,11 @@
-"""
-Conflict resolution module.
-Tracks resource occupancy (block sections, platforms) and ensures
-no two trains occupy the same resource at the same time.
-
-For single-line block sections, both directions share the same physical track
-so conflicts are checked bidirectionally.
-"""
-
 from collections import defaultdict
 import bisect
 
 
 class ResourceTracker:
-    """
-    Tracks occupancy of block sections and platforms.
-    Detects conflicts and computes the earliest available entry time.
-    """
+    # Tracks occupancy of block sections and platforms, Detects conflicts and computes the earliest available entry time.
 
     def __init__(self, block_sections_data):
-        """
-        Initialize with block section master data to determine capacities
-        and single-line section mappings.
-
-        Parameters:
-            block_sections_data: dict of block sections keyed by block_section_id
-        """
         # Occupancy intervals: key -> sorted list of (end_time, start_time, train_id)
         # Sorted by end_time for efficient conflict search
         self._block_occupancy = defaultdict(list)
@@ -63,8 +44,8 @@ class ResourceTracker:
         pk = self._get_physical_key(bs_id)
         return self._capacity.get(pk, 1)
 
+    # Count how many existing intervals overlap with [start, end)
     def count_overlaps(self, intervals, start, end):
-        """Count how many existing intervals overlap with [start, end)."""
         count = 0
         for (iend, istart, _) in intervals:
             if istart < end and iend > start:
@@ -72,10 +53,8 @@ class ResourceTracker:
         return count
 
     def earliest_available(self, intervals, desired_start, duration, capacity):
-        """
-        Find the earliest start time >= desired_start such that the resource
-        has fewer than `capacity` overlapping occupancies during [start, start+duration).
-        """
+        # Find the earliest start time >= desired_start such that the resource has fewer than `capacity` overlapping occupancies during [start, start+duration).
+        
         candidate = desired_start
         max_iterations = len(intervals) + 1  # prevent infinite loop
 
@@ -139,7 +118,7 @@ class ResourceTracker:
             station: station code
             platform: platform identifier
             desired_start: desired arrival time
-            duration: stoppage duration (how long the train occupies the platform)
+            duration: stoppage duration
             train_id: identifier of the train
 
         Returns:
@@ -164,8 +143,8 @@ class ResourceTracker:
 
         return actual_start
 
+    # returns the conflict resolution statistics
     def get_stats(self):
-        """Return conflict resolution statistics."""
         return {
             'conflicts_resolved': self._conflicts_resolved,
             'total_delay_seconds': self._total_delay_seconds,

@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Indian Railway Primal Timetable Generator.
+This is the main entry point
 
 Usage:
-    # Generate schedule for all trains (computed runtimes, with conflict resolution):
-    python3 main.py --mode compute --output generated_schedule.csv
+    # Generate primal schedule (computed runtimes, conflict resolution):
+    python3 main.py --mode compute --output primal_schedule.csv
 
-    # Generate using reference runtimes:
-    python3 main.py --mode reference --output generated_schedule.csv
+    # With custom start time for a single train:
+    python3 main.py --mode compute --train SECR24251871 --start-time 28800 --output schedule.csv
 
-    # Generate for a specific train (no conflict resolution):
-    python3 main.py --mode compute --train SECR24251871 --output schedule.csv
+    # With start times from a CSV file (columns: MAVPROPOSALID, start_time):
+    python3 main.py --mode compute --start-times-file start_times.csv --output schedule.csv
 
-    # Generate without conflict resolution:
-    python3 main.py --mode compute --no-conflicts --output generated_schedule.csv
+    # With derived stoppage durations (median per station from data):
+    python3 main.py --mode compute --derive-stoppages --output schedule.csv
 
-    # Generate and verify against reference:
-    python3 main.py --mode compute --verify --compare --output generated_schedule.csv
+    # Reference mode (reproduce existing schedule with conflict resolution):
+    python3 main.py --mode reference --output reference_schedule.csv
+
+    # Generate and verify:
+    python3 main.py --mode compute --verify --compare --output schedule.csv
 """
 
 import argparse
+import csv
+import json
 import sys
 import time
 from pathlib import Path
+from collections import defaultdict
 
 # Add implementation dir to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -38,12 +44,59 @@ ROOT_DIR = Path(__file__).parent.parent
 
 def progress(current, total):
     pct = current / total * 100
-    print(f"\r  Progress: {current}/{total} ({pct:.1f}%)", end='', flush=True)
+    print(f"\rProgress: {current}/{total} ({pct:.1f}%)", end='', flush=True)
+
+
+def build_stoppage_model(routes, stations):
+    """
+    Build a stoppage duration model from route data.
+    Returns dict: station_code -> median stoppage (seconds).
+    Only includes stations where trains actually stop.
+    """
+    stn_stoppages = defaultdict(list)
+    for pid, route in routes.items():
+        for i, leg in enumerate(route):
+            stp = leg.get('stoppage_time', 0)
+            if stp > 0 and i > 0 and i < len(route) - 1:
+                stn_stoppages[leg['station']].append(stp)
+
+    model = {}
+    for stn, vals in stn_stoppages.items():
+        sorted_vals = sorted(vals)
+        model[stn] = sorted_vals[len(sorted_vals) // 2]  # median
+    return model
+
+
+def load_start_times_file(filepath):
+    # Load start times from a CSV file with columns: MAVPROPOSALID, start_time
+    start_times = {}
+    with open(filepath, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pid = row.get('MAVPROPOSALID', '').strip()
+            st = row.get('start_time', '').strip()
+            if pid and st:
+                try:
+                    start_times[pid] = int(st)
+                except ValueError:
+                    pass
+    return start_times
+
+
+def parse_time_string(time_str):
+    # Parse time as seconds (int) or HH:MM:SS format
+    time_str = time_str.strip()
+    if ':' in time_str:
+        parts = time_str.split(':')
+        h, m = int(parts[0]), int(parts[1])
+        s = int(parts[2]) if len(parts) > 2 else 0
+        return h * 3600 + m * 60 + s
+    return int(time_str)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Indian Railway Primal Timetable Generator"
+        description="Indian Railway Timetable Generator"
     )
     parser.add_argument(
         '--mode', choices=['compute', 'reference'], default='compute',
@@ -53,6 +106,20 @@ def main():
     parser.add_argument(
         '--train', type=str, default=None,
         help='Generate for a specific train (MAVPROPOSALID). Omit for all trains.'
+    )
+    parser.add_argument(
+        '--start-time', type=str, default=None, dest='start_time',
+        help='Start time for the train (seconds or HH:MM:SS). '
+             'Only used with --train for single-train mode.'
+    )
+    parser.add_argument(
+        '--start-times-file', type=str, default=None, dest='start_times_file',
+        help='CSV file with columns MAVPROPOSALID,start_time for batch start time overrides.'
+    )
+    parser.add_argument(
+        '--derive-stoppages', action='store_true', dest='derive_stoppages',
+        help='Use derived stoppage durations (per-station median from data) '
+             'instead of exact reference stoppages. Only applies in compute mode.'
     )
     parser.add_argument(
         '--output', type=str, default='generated_schedule.csv',
@@ -70,7 +137,20 @@ def main():
         '--no-conflicts', action='store_true', dest='no_conflicts',
         help='Disable inter-train conflict resolution'
     )
+    parser.add_argument(
+        '--discover-routes', action='store_true', dest='discover_routes',
+        help='Use route finder for trains without pre-defined routes. '
+             'Finds shortest path from origin to destination in block section network.'
+    )
+    parser.add_argument(
+        '--all-trains', action='store_true', dest='all_trains',
+        help='Schedule ALL trains from TrainMaster (not just those with reference routes). '
+             'Implies --discover-routes.'
+    )
     args = parser.parse_args()
+
+    if args.all_trains:
+        args.discover_routes = True
 
     print("=" * 60)
     print("Indian Railway Primal Timetable Generator")
@@ -83,26 +163,60 @@ def main():
     resolve_conflicts = not args.no_conflicts
     mode_label = "REFERENCE" if use_reference else "COMPUTED"
     conflict_label = "ON" if resolve_conflicts else "OFF"
-    print(f"Mode: {mode_label} | Conflict resolution: {conflict_label}")
+
+    # Build start time overrides
+    start_times = {}
+    if args.start_times_file:
+        fpath = Path(args.start_times_file)
+        if not fpath.is_absolute():
+            fpath = ROOT_DIR / fpath
+        start_times = load_start_times_file(fpath)
+        print(f"Loaded {len(start_times)} start time overrides from {fpath.name}")
+
+    # Build stoppage model if requested
+    stoppage_model = None
+    if args.derive_stoppages and not use_reference:
+        stoppage_model = build_stoppage_model(data['routes'], data['stations'])
+        print(f"Built stoppage model: {len(stoppage_model)} station rules (median-based)")
+
+    print(f"Mode: {mode_label} | Conflict resolution: {conflict_label}"
+          f"{' | Derived stoppages' if stoppage_model else ''}"
+          f"{' | Dynamic lines' if not use_reference else ''}"
+          f"{' | Route discovery' if args.discover_routes else ''}")
 
     # Determine which trains to generate
     if args.train:
         train_ids = [args.train]
-        if args.train not in data['routes']:
-            print(f"ERROR: No route found for train {args.train}")
-            sys.exit(1)
-        if args.train not in data['trains']:
+        has_route = args.train in data['routes']
+        has_train = args.train in data['trains']
+        if not has_train:
             print(f"ERROR: Train {args.train} not found in train master")
             sys.exit(1)
-        print(f"Generating for single train: {args.train}")
+        if not has_route and not args.discover_routes:
+            print(f"ERROR: No route found for train {args.train}. Use --discover-routes.")
+            sys.exit(1)
+        print(f"Generating for single train: {args.train}"
+              f"{' (route will be discovered)' if not has_route else ''}")
+        # Single-train start time override
+        if args.start_time:
+            start_times[args.train] = parse_time_string(args.start_time)
+            print(f"  Start time override: {start_times[args.train]}s"
+                  f" ({start_times[args.train]//3600:02d}:"
+                  f"{(start_times[args.train]%3600)//60:02d}:"
+                  f"{start_times[args.train]%60:02d})")
         # Single-train mode: no conflict resolution needed
         resolve_conflicts = False
+    elif args.all_trains:
+        train_ids = list(data['trains'].keys())
+        print(f"Generating for ALL {len(train_ids)} trains from TrainMaster"
+              f" ({len(data['routes'])} with reference routes,"
+              f" {len(train_ids) - len(data['routes'])} to discover)")
     else:
         train_ids = list(data['routes'].keys())
-        print(f"Generating for all {len(train_ids)} trains")
+        print(f"Generating for {len(train_ids)} trains with reference routes")
 
     # Generate schedules
-    start_time = time.time()
+    gen_start = time.time()
     print(f"\nGenerating schedules...")
 
     all_rows, generated, skipped, conflict_stats = generate_all_trains(
@@ -113,9 +227,16 @@ def main():
         train_ids=train_ids,
         progress_callback=progress,
         resolve_conflicts=resolve_conflicts,
+        start_times=start_times if start_times else None,
+        stoppage_model=stoppage_model,
+        station_lines=data.get('station_lines'),
+        block_section_lines=data.get('block_section_lines'),
+        line_connections=data.get('line_connections'),
+        stations=data.get('stations'),
+        discover_routes=args.discover_routes,
     )
 
-    elapsed = time.time() - start_time
+    elapsed = time.time() - gen_start
     print(f"\n  Generated: {generated} trains, {len(all_rows)} rows in {elapsed:.1f}s")
     if skipped:
         print(f"  Skipped: {skipped} trains (missing master or route data)")

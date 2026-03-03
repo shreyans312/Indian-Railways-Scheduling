@@ -1,9 +1,3 @@
-"""
-Verification module.
-Validates generated schedules against arithmetic invariants,
-physical constraints, and optionally the reference schedule.
-"""
-
 import csv
 import math
 from pathlib import Path
@@ -12,10 +6,6 @@ SECONDS_IN_A_DAY = 86400
 
 
 def verify_arithmetic(rows):
-    """
-    Verify arithmetic invariants for all rows.
-    Returns list of error dicts.
-    """
     errors = []
     trains = {}
     for row in rows:
@@ -76,10 +66,6 @@ def verify_arithmetic(rows):
 
 
 def verify_speed_constraints(rows, block_sections):
-    """
-    Verify that runtimes don't violate speed limits.
-    Returns list of warning dicts.
-    """
     warnings = []
     for row in rows:
         bs_id = row['MAVBLCKSCTN']
@@ -112,10 +98,6 @@ def verify_speed_constraints(rows, block_sections):
 
 
 def compare_with_reference(generated_rows, reference_path):
-    """
-    Compare generated schedule with reference Train_Schedule.csv.
-    Returns comparison statistics per train.
-    """
     # Load reference
     ref = {}
     with open(reference_path, 'r', encoding='utf-8-sig') as f:
@@ -184,25 +166,25 @@ def run_verification(rows, block_sections, reference_path=None):
     print("\n[1] Arithmetic Invariants")
     arith_errors = verify_arithmetic(rows)
     if not arith_errors:
-        print(f"  PASS: All {len(rows)} rows satisfy arithmetic invariants")
+        print(f"PASS: All {len(rows)} rows satisfy arithmetic invariants")
     else:
-        print(f"  FAIL: {len(arith_errors)} errors found")
+        print(f"FAIL: {len(arith_errors)} errors found")
         for e in arith_errors[:10]:
-            print(f"    Train {e['train']} Seq {e['seq']}: {e['msg']}")
+            print(f"Train {e['train']} Seq {e['seq']}: {e['msg']}")
         if len(arith_errors) > 10:
-            print(f"    ... and {len(arith_errors) - 10} more")
+            print(f"... and {len(arith_errors) - 10} more")
 
     # 2. Speed constraints
     print("\n[2] Speed Constraint Checks")
     speed_warnings = verify_speed_constraints(rows, block_sections)
     if not speed_warnings:
-        print(f"  PASS: No speed limit violations detected")
+        print(f"PASS: No speed limit violations detected")
     else:
-        print(f"  WARNING: {len(speed_warnings)} potential speed violations")
+        print(f"WARNING: {len(speed_warnings)} potential speed violations")
         for w in speed_warnings[:5]:
-            print(f"    Train {w['train']} Seq {w['seq']}: {w['msg']}")
+            print(f"Train {w['train']} Seq {w['seq']}: {w['msg']}")
         if len(speed_warnings) > 5:
-            print(f"    ... and {len(speed_warnings) - 5} more")
+            print(f"... and {len(speed_warnings) - 5} more")
 
     # 3. Comparison with reference
     if reference_path and Path(reference_path).exists():
@@ -210,14 +192,14 @@ def run_verification(rows, block_sections, reference_path=None):
         comp = compare_with_reference(rows, reference_path)
         matched = comp['matched_rows']
         if matched > 0:
-            print(f"  Matched rows: {matched}/{comp['total_rows']}")
-            print(f"  Runtime exact match: {comp['rt_exact_match']} ({comp['rt_exact_match']/matched*100:.1f}%)")
-            print(f"  Runtime within 30s:  {comp['rt_within_30s']} ({comp['rt_within_30s']/matched*100:.1f}%)")
-            print(f"  Runtime within 60s:  {comp['rt_within_60s']} ({comp['rt_within_60s']/matched*100:.1f}%)")
+            print(f"Matched rows: {matched}/{comp['total_rows']}")
+            print(f"Runtime exact match: {comp['rt_exact_match']} ({comp['rt_exact_match']/matched*100:.1f}%)")
+            print(f"Runtime within 30s:  {comp['rt_within_30s']} ({comp['rt_within_30s']/matched*100:.1f}%)")
+            print(f"Runtime within 60s:  {comp['rt_within_60s']} ({comp['rt_within_60s']/matched*100:.1f}%)")
             avg_diff = comp['total_rt_diff'] / matched
-            print(f"  Average RT diff:     {avg_diff:.1f}s")
+            print(f"Average RT diff:     {avg_diff:.1f}s")
         else:
-            print(f"  No matching rows found in reference")
+            print(f"No matching rows found in reference")
     else:
         print("\n[3] Reference comparison: skipped (no reference file)")
 

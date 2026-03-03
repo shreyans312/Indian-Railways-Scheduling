@@ -1,9 +1,4 @@
-"""
-Runtime calculator module.
-Computes the runtime for a train traversing a single block section,
-accounting for distance, speed limits, curvature, speed restrictions,
-and acceleration/deceleration.
-"""
+# Runtime calculator module: Computes the runtime for a train traversing a single block section,accounting for distance, speed limits, curvature, speed restrictions and acceleration/deceleration.
 
 import math
 
@@ -15,17 +10,14 @@ ROUND_UNIT = 30
 
 
 def round_to_unit(seconds, unit=ROUND_UNIT):
-    """Round seconds to the nearest multiple of `unit`."""
+    # Round seconds to the nearest multiple of 'unit'
     if seconds <= 0:
         return 0
     return round(seconds / unit) * unit
 
 
 def compute_effective_speed(train_mps, block_max_speed):
-    """
-    Compute effective speed as the minimum of train max permissible speed
-    and block section max speed. Both in km/h.
-    """
+    # Compute effective speed as the minimum of train max permissible speed and block section max speed both in km/h.
     speeds = [s for s in [train_mps, block_max_speed] if s and s > 0]
     if not speeds:
         return 100  # fallback default
@@ -33,10 +25,6 @@ def compute_effective_speed(train_mps, block_max_speed):
 
 
 def compute_base_runtime(distance_km, effective_speed_kph):
-    """
-    Compute base runtime in seconds = distance / speed * 3600.
-    Returns raw float (not rounded).
-    """
     if effective_speed_kph <= 0 or distance_km <= 0:
         return 0.0
     return (distance_km / effective_speed_kph) * 3600
@@ -62,8 +50,7 @@ def compute_speed_restriction_adjustment(block_section_data, is_goods=False):
     return block_section_data.get('speed_restriction_time_loss_psgr', 0)
 
 
-def calculate_runtime(train_props, block_section_data, has_prev_stop, has_next_stop,
-                      use_reference=False, ref_runtime=None):
+def calculate_runtime(train_props, block_section_data, has_prev_stop, has_next_stop, use_reference=False, ref_runtime=None):
     """
     Calculate total runtime for a train traversing a block section.
 

@@ -3,11 +3,13 @@ Schedule generation engine.
 Generates a complete primal schedule for trains by traversing
 routes and computing timings, with inter-train conflict resolution
 ensuring no two trains occupy the same block section or platform
-at the same time.
+at the same time, and dynamic line selection at stations.
 """
 
 from runtime_calc import calculate_runtime
 from conflict_resolver import ResourceTracker
+from line_selector import LineSelector
+from route_finder import RouteFinder, determine_stoppages, build_train_stoppage_maps
 
 SECONDS_IN_A_DAY = 86400
 
@@ -36,12 +38,21 @@ def compute_day_of_run(time_seconds):
 
 
 def get_train_priority(train_props):
-    """Return departure_time for sorting (all trains equal priority, FCFS)."""
-    return train_props.get('departure_time', 0)
+    """
+    Sort key for train scheduling order.
+    Primary: departure time (FCFS). Tiebreaker: train type priority
+    (Rajdhani before Passenger when both depart at the same time).
+    """
+    dep = train_props.get('departure_time', 0)
+    ttype = train_props.get('train_type', '')
+    prio = TRAIN_TYPE_PRIORITY.get(ttype, DEFAULT_PRIORITY)
+    return (dep, prio)
 
 
 def generate_single_train(train_props, route, block_sections,
-                          use_reference=False, resource_tracker=None):
+                          use_reference=False, resource_tracker=None,
+                          start_time_override=None, stoppage_model=None,
+                          line_selector=None):
     """
     Generate a complete schedule for a single train.
 
@@ -55,6 +66,10 @@ def generate_single_train(train_props, route, block_sections,
         block_sections: dict of all block sections (keyed by block_section_id)
         use_reference: if True, use reference runtimes from existing schedule
         resource_tracker: optional ResourceTracker for conflict resolution
+        start_time_override: optional int, overrides train's departure time (seconds)
+        stoppage_model: optional dict mapping station_code -> median stoppage (seconds).
+                        When provided in compute mode, uses derived stoppages instead
+                        of reference stoppages from route data.
 
     Returns:
         list of dicts, each representing one row of the output schedule
@@ -63,7 +78,10 @@ def generate_single_train(train_props, route, block_sections,
         return []
 
     proposal_id = train_props['proposal_id']
-    departure_time = train_props.get('departure_time', 0)
+    if start_time_override is not None:
+        departure_time = start_time_override
+    else:
+        departure_time = train_props.get('departure_time', 0)
 
     schedule_rows = []
     current_time = departure_time
@@ -72,6 +90,9 @@ def generate_single_train(train_props, route, block_sections,
         is_last = (i == len(route) - 1)
         station = leg['station']
         block_section_id = leg['block_section']
+
+        # Determine stoppage: use the route's embedded stoppage_time
+        # (already set correctly by determine_stoppages with train-specific maps)
         stoppage = leg.get('stoppage_time', 0)
 
         # Arrival at this station
@@ -80,7 +101,6 @@ def generate_single_train(train_props, route, block_sections,
         # Departure = arrival + stoppage
         departure_from_station = arrival_time + stoppage
 
-        # --- Platform conflict check ---
         # If platform is occupied, delay departure (not arrival) to preserve cross-row invariant
         platform = leg.get('platform', '')
         if resource_tracker and platform and stoppage > 0:
@@ -121,7 +141,7 @@ def generate_single_train(train_props, route, block_sections,
 
         runtime = runtime_result['runtime']
 
-        # --- Block section conflict check ---
+        # Block section conflict check
         if resource_tracker and block_section_id and runtime > 0:
             actual_departure = resource_tracker.check_and_reserve_block_section(
                 block_section_id, departure_from_station, runtime, proposal_id
@@ -133,6 +153,24 @@ def generate_single_train(train_props, route, block_sections,
                 departure_from_station = actual_departure
 
         next_arrival = departure_from_station + runtime
+
+        # Line selection
+        # In reference mode, use the line from route data.
+        # In compute mode with line_selector, dynamically select lines.
+        if line_selector and not use_reference:
+            bs_in = route[i - 1]['block_section'] if i > 0 else ''
+            bs_out = block_section_id
+            selected_stn_line = line_selector.select_station_line(
+                station, bs_in, bs_out, arrival_time, departure_from_station
+            )
+            selected_bs_line = ''
+            if block_section_id and runtime > 0:
+                selected_bs_line = line_selector.select_bs_line(
+                    block_section_id, departure_from_station, next_arrival
+                )
+        else:
+            selected_stn_line = leg.get('station_line', '')
+            selected_bs_line = leg.get('bs_line', '')
 
         # Day of run
         day_of_run = compute_day_of_run(arrival_time)
@@ -210,14 +248,14 @@ def generate_single_train(train_props, route, block_sections,
             'MACGARBG': 'N',
             'MACWATER': 'N',
             'MAVPLATFORMNUMB_NEW': '',
-            'MAVSTTNLINE': leg.get('station_line', ''),
+            'MAVSTTNLINE': selected_stn_line,
             'MAVPFDRTN': '',
             'MAVSTTNLINE_NEW': '',
             'MAVPFDRTN_NEW': '',
             'MANNOTIFICATIONFLAG': 0,
             'MACCLASSFLAG': leg.get('class_flag', ''),
             'MACREPORTINGFLAG': leg.get('reporting_flag', 'Y'),
-            'MAVBLCKSCTNLINE': leg.get('bs_line', ''),
+            'MAVBLCKSCTNLINE': selected_bs_line,
             'MANTRAINID': train_props.get('train_id', 0),
             'MAVTRAINNUMBER': train_props.get('train_number', ''),
             'MAVPLATFORMNUMBER_NEW': '',
@@ -233,13 +271,14 @@ def generate_single_train(train_props, route, block_sections,
 
 def generate_all_trains(trains, routes, block_sections, use_reference=False,
                         train_ids=None, progress_callback=None,
-                        resolve_conflicts=True):
+                        resolve_conflicts=True, start_times=None,
+                        stoppage_model=None, station_lines=None,
+                        block_section_lines=None, line_connections=None,
+                        stations=None, discover_routes=False):
     """
     Generate schedules for multiple trains with conflict resolution.
 
-    Trains are processed in priority order (Rajdhani first, then Shatabdi,
-    then Express, etc.). Higher-priority trains get their preferred slots;
-    lower-priority trains are delayed if they conflict.
+    Trains are processed in departure-time order (first-come-first-served).
 
     Parameters:
         trains: dict of train properties keyed by proposal_id
@@ -249,6 +288,13 @@ def generate_all_trains(trains, routes, block_sections, use_reference=False,
         train_ids: optional list of proposal_ids to generate (None = all)
         progress_callback: optional function(current, total) for progress reporting
         resolve_conflicts: if True, enforce no two trains on same resource at same time
+        start_times: optional dict mapping proposal_id -> start_time (seconds)
+        stoppage_model: optional dict mapping station_code -> median stoppage (seconds)
+        station_lines: optional dict for dynamic line selection
+        block_section_lines: optional dict for dynamic line selection
+        line_connections: optional dict for dynamic line selection
+        stations: optional dict of station data (for route discovery)
+        discover_routes: if True, use RouteFinder for trains without pre-defined routes
 
     Returns:
         tuple: (all_rows, generated_count, skipped_count, conflict_stats)
@@ -256,15 +302,78 @@ def generate_all_trains(trains, routes, block_sections, use_reference=False,
     if train_ids is None:
         train_ids = list(routes.keys())
 
-    # Filter to valid trains
-    valid_ids = [pid for pid in train_ids if pid in trains and pid in routes]
-    skipped = len(train_ids) - len(valid_ids)
+    # Build per-train stoppage maps from reference route data.
+    # For each reference train, this maps station -> exact stoppage time.
+    # When Dijkstra discovers a new route, stations shared with the reference
+    # keep their exact stoppage times, while new stations fall back to the
+    # generic per-station median model.
+    train_stoppage_maps = build_train_stoppage_maps(routes)
 
-    # Sort by priority: higher-priority trains get scheduled first
+    # Extract mandatory waypoints (stopping stations) from reference routes.
+    # Forces Dijkstra to pass through every station where the train must stop,
+    # while allowing it to find its own shortest path between stops.
+    train_waypoints = {}
+    for tid, legs in routes.items():
+        sorted_legs = sorted(legs, key=lambda x: int(x.get('seq', 0)))
+        wps = [l['station'] for l in sorted_legs if l.get('stoppage_time', 0) > 0]
+        if wps:
+            train_waypoints[tid] = wps
+
+    # Initialize route finder for trains without pre-defined routes
+    route_finder = None
+    discovered_routes = {}
+    if discover_routes:
+        route_finder = RouteFinder(block_sections, line_connections, stations)
+
+    # Filter: train must be in trains dict, and either have a route or be discoverable
+    valid_ids = []
+    skipped = 0
+    for pid in train_ids:
+        if pid not in trains:
+            skipped += 1
+            continue
+        if pid in routes:
+            valid_ids.append(pid)
+        elif route_finder:
+            t = trains[pid]
+            origin = t.get('origin', '')
+            dest = t.get('destination', '')
+            if origin and dest:
+                # Use waypoint routing if the train has known stopping stations
+                waypoints = train_waypoints.get(pid)
+                if waypoints:
+                    found = route_finder.find_route_via_waypoints(
+                        origin, dest, waypoints, t.get('gauge', 'B')
+                    )
+                else:
+                    found = route_finder.find_route(origin, dest, t.get('gauge', 'B'))
+                if found:
+                    # Apply stoppages: train-specific map first, then generic model
+                    determine_stoppages(
+                        found, stoppage_model, stations or {},
+                        train_stoppage_map=train_stoppage_maps.get(pid)
+                    )
+                    discovered_routes[pid] = found
+                    valid_ids.append(pid)
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+        else:
+            skipped += 1
+
+    # Sort by departure time (first-come-first-served)
     valid_ids.sort(key=lambda pid: get_train_priority(trains[pid]))
 
     # Initialize resource tracker for conflict resolution
     tracker = ResourceTracker(block_sections) if resolve_conflicts else None
+
+    # Initialize line selector for dynamic line assignment
+    lselector = None
+    if station_lines and line_connections and not use_reference:
+        lselector = LineSelector(
+            station_lines, block_section_lines or {}, line_connections
+        )
 
     all_rows = []
     total = len(valid_ids)
@@ -272,11 +381,15 @@ def generate_all_trains(trains, routes, block_sections, use_reference=False,
 
     for idx, pid in enumerate(valid_ids):
         train_props = trains[pid]
-        route = routes[pid]
+        route = routes.get(pid) or discovered_routes.get(pid, [])
+        override = start_times.get(pid) if start_times else None
         rows = generate_single_train(
             train_props, route, block_sections,
             use_reference=use_reference,
             resource_tracker=tracker,
+            start_time_override=override,
+            stoppage_model=stoppage_model,
+            line_selector=lselector,
         )
         all_rows.extend(rows)
         generated += 1

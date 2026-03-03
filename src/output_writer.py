@@ -1,13 +1,10 @@
-"""
-Output writer module.
-Writes generated schedule data to CSV in the exact 63-column format
-matching Train_Schedule.csv.
-"""
+
+# Writes generated schedule data to CSV in the exact 63-column format as CRIS uses
 
 import csv
 from pathlib import Path
 
-# The exact 63 columns in order, matching Train_Schedule.csv
+# The exact 63 columns in order
 OUTPUT_COLUMNS = [
     'MAVPROPOSALID',
     'MANSEQNUMBER',
